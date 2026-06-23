@@ -441,24 +441,44 @@
 // OpenCV.js 在使用者第一次按「偵測」時才載入（避免拖慢開啟 / 省流量）
 function loadOpenCV() {
   return new Promise((resolve, reject) => {
+    // 已就緒
     if (window.cv && window.cv.Mat) { cvReady = true; return resolve(); }
-    if (document.getElementById('opencv-script')) {
-      // 已在載入中，等它完成
-      const wait = setInterval(() => {
-        if (window.cv && window.cv.Mat) { clearInterval(wait); cvReady = true; resolve(); }
-      }, 200);
-      return;
-    }
+
+    // 共用：輪詢等 cv.Mat 出現（runtime 初始化完成的最可靠判準）
+    const poll = (timeoutMs) => {
+      const start = Date.now();
+      const t = setInterval(() => {
+        if (window.cv && window.cv.Mat) {
+          clearInterval(t); cvReady = true; resolve();
+        } else if (Date.now() - start > timeoutMs) {
+          clearInterval(t); reject(new Error('OpenCV 初始化逾時'));
+        }
+      }, 150);
+    };
+
+    // 已在載入中
+    if (document.getElementById('opencv-script')) { poll(30000); return; }
+
     const s = document.createElement('script');
     s.id = 'opencv-script';
-    s.src = 'https://docs.opencv.org/4.10.0/opencv.js';
+    s.src = './opencv.js';        // 改用 repo 內自架版本，不依賴外部 CDN
     s.async = true;
     s.onload = () => {
-      // OpenCV 載入後還需等 runtime 初始化
-      if (window.cv && window.cv.Mat) { cvReady = true; resolve(); }
-      else { window.cv = window.cv || {}; window.cv.onRuntimeInitialized = () => { cvReady = true; resolve(); }; }
+      // @techstark UMD 版：載入後 window.cv 可能是 module factory，
+      // 需等 WASM runtime 初始化完成（cv.Mat 才會出現）。
+      if (window.cv && window.cv.Mat) { cvReady = true; return resolve(); }
+      if (window.cv && typeof window.cv.then === 'function') {
+        // cv 是 Promise，解出真正的模組
+        window.cv.then((mod) => { window.cv = mod; cvReady = true; resolve(); })
+                 .catch(reject);
+        return;
+      }
+      // 否則掛上初始化回呼，並用輪詢兜底
+      window.Module = window.Module || {};
+      window.Module.onRuntimeInitialized = () => { cvReady = true; resolve(); };
+      poll(30000);
     };
-    s.onerror = () => reject(new Error('OpenCV.js 載入失敗'));
+    s.onerror = () => reject(new Error('OpenCV.js 載入失敗（找不到 ./opencv.js）'));
     document.body.appendChild(s);
   });
 }
